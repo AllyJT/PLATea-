@@ -1,3 +1,5 @@
-Changing afternoon 21/8/2026
+### Changing afternoon 21/8/2026
+# Ally: 
 - changing def risk into async def risk: make the function pausable, give the running slot to the quicker function
 - add await to pause the function
+- making the risk calculation being run by other
