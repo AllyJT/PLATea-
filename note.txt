@@ -1,0 +1,3 @@
+Changing afternoon 21/8/2026
+- changing def risk into async def risk: make the function pausable, give the running slot to the quicker function
+- add await to pause the function

@@ -12,8 +12,10 @@
 # cores. If you add uvicorn/gunicorn workers, set the count explicitly (e.g. 2);
 # do not let the server auto-size from the visible core count.
 
-import hashlib
+import asyncio
 import math
+from risk import calculate_risk
+from concurrent.futures import ProcessPoolExecutor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -54,13 +56,6 @@ def stats(symbol: str):
             "stddev": math.sqrt(variance)}
 
 
-# HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
-@app.get("/risk")
-def risk(seed: str = "none"):
-    h = seed
-    for _ in range(50000):
-        h = hashlib.sha256(h.encode()).hexdigest()
-    return {"seed": seed, "risk_hash": h}
 
 
 # OPTIONAL, only for the persistence bonus. In-memory only, so it does NOT
@@ -74,3 +69,29 @@ class PriceUpdate(BaseModel):
 def update_price(update: PriceUpdate):
     PRICES[update.symbol] = update.price
     return {"symbol": update.symbol, "price": update.price}
+
+# Prioritize the /price and /stats endpoints over /risk, 
+# so that a heavy /risk request does not block the others. 
+
+RISK_POOL = ProcessPoolExecutor(max_workers=2)
+
+
+# HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
+@app.get("/risk")
+# Make the risk endpoint async so it can be pause, allow other low 
+# and medium weight to run first while risk is being calculated by
+# 
+async def risk(seed: str = "none"):
+    # keep track of which event is ready to run next
+    event_loop = asyncio.get_running_loop() 
+
+    # calculate the risk , its being done by the process pool executor (another thread), 
+    # so it does not block the main thread
+    # the risk is being calculated in the background
+    result_of_risk = event_loop.run_in_executor(RISK_POOL, calculate_risk, seed)
+
+    # wait for the result of the risk calculation to be ready
+    # let the low and medium endpoints run first while the risk is being calculated
+    h = await result_of_risk
+    return {"seed": seed, "risk_hash": h}
+
