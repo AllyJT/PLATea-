@@ -73,8 +73,8 @@ def update_price(update: PriceUpdate):
 # Prioritize the /price and /stats endpoints over /risk, 
 # so that a heavy /risk request does not block the others. 
 
-RISK_POOL = ProcessPoolExecutor(max_workers=2)
-
+RISK_POOL = ProcessPoolExecutor(max_workers=1)
+# attempting to change 2->1 because there's only 2 CPUs in the container, and risk is CPU bound.
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
@@ -86,7 +86,10 @@ async def risk(seed: str = "none"):
     event_loop = asyncio.get_running_loop() 
 
     # calculate the risk , its being done by the process pool executor (another thread), 
+    
     # so it does not block the main thread
+    # Run the CPU-heavy risk calculation in a separate process
+    # so it does not execute on the FastAPI process itself.
     # the risk is being calculated in the background
     result_of_risk = event_loop.run_in_executor(RISK_POOL, calculate_risk, seed)
 
