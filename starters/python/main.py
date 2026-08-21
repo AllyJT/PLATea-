@@ -72,25 +72,56 @@ def update_price(update: PriceUpdate):
 # Prioritize the /price and /stats endpoints over /risk, 
 # so that a heavy /risk request does not block the others. 
 
-# Each Uvicorn worker owns one risk process.
-RISK_POOL = ProcessPoolExecutor(max_workers=1)
+RISK_POOL = ProcessPoolExecutor(max_workers=2)
+## Adding semaphore to limit the number of concurrent risk calculations to 2
+RISK_SLOTS = asyncio.Semaphore(2)
+RISK_QUEUE_TIMEOUT = 1
+
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
 # Make the risk endpoint async so it can be pause, allow other low 
 # and medium weight to run first while risk is being calculated by
-# 
+# # 
+# async def risk(seed: str = "none"):
+#     # keep track of which event is ready to run next
+#     event_loop = asyncio.get_running_loop() 
+
+#     # calculate the risk , its being done by the process pool executor (another thread), 
+#     # so it does not block the main thread
+#     # the risk is being calculated in the background
+#     result_of_risk = event_loop.run_in_executor(RISK_POOL, calculate_risk, seed)
+
+#     # wait for the result of the risk calculation to be ready
+#     # let the low and medium endpoints run first while the risk is being calculated
+#     h = await result_of_risk
+#     return {"seed": seed, "risk_hash": h}
+
 async def risk(seed: str = "none"):
-    # keep track of which event is ready to run next
-    event_loop = asyncio.get_running_loop() 
+    try:
+        await asyncio.wait_for(
+            RISK_SLOTS.acquire(),
+            timeout=RISK_QUEUE_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="risk service overloaded"
+        )
 
-    # calculate the risk , its being done by the process pool executor (another thread), 
-    # so it does not block the main thread
-    # the risk is being calculated in the background
-    result_of_risk = event_loop.run_in_executor(RISK_POOL, calculate_risk, seed)
+    try:
+        event_loop = asyncio.get_running_loop()
 
-    # wait for the result of the risk calculation to be ready
-    # let the low and medium endpoints run first while the risk is being calculated
-    h = await result_of_risk
-    return {"seed": seed, "risk_hash": h}
+        h = await event_loop.run_in_executor(
+            RISK_POOL,
+            calculate_risk,
+            seed
+        )
 
+        return {
+            "seed": seed,
+            "risk_hash": h
+        }
+
+    finally:
+        RISK_SLOTS.release()

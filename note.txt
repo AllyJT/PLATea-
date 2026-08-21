@@ -1,3 +1,61 @@
 Changing afternoon 21/8/2026
 - changing def risk into async def risk: make the function pausable, give the running slot to the quicker function
 - add await to pause the function
+
+record of the test run : 
+     scenarios: (100.00%) 1 scenario, 200 max VUs, 5m0s max duration (incl. graceful stop):
+              * siege: Up to 200 looping VUs for 4m30s over 4 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+
+  █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✓ 'p(95)<200' p(95)=4.63ms
+
+    http_req_duration{tier:risk}
+    ✗ 'p(95)<1500' p(95)=8.11s
+
+    http_req_duration{tier:stats}
+    ✓ 'p(95)<500' p(95)=5.11ms
+
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 78639   291.225051/s
+    checks_succeeded...: 100.00% 78639 out of 78639
+    checks_failed......: 0.00%   0 out of 78639
+
+    ✓ status is 200
+
+    CUSTOM
+    work_score.....................: 196106 726.242447/s
+
+    HTTP
+    http_req_duration..............: avg=290.5ms  min=504.8µs med=1.78ms max=9.42s    p(90)=53.12ms p(95)=2.37s 
+      { expected_response:true }...: avg=290.5ms  min=504.8µs med=1.78ms max=9.42s    p(90)=53.12ms p(95)=2.37s 
+      { tier:price }...............: avg=2.7ms    min=504.8µs med=1.65ms max=169.95ms p(90)=2.78ms  p(95)=4.63ms
+      { tier:risk }................: avg=2.89s    min=40.36ms med=2.39s  max=9.42s    p(90)=6.94s   p(95)=8.11s 
+      { tier:stats }...............: avg=2.89ms   min=506.8µs med=1.86ms max=102.06ms p(90)=3ms     p(95)=5.11ms
+    http_req_failed................: 0.00%  0 out of 78639
+    http_reqs......................: 78639  291.225051/s
+
+    EXECUTION
+    iteration_duration.............: avg=290.66ms min=504.8µs med=2.12ms max=9.42s    p(90)=53.54ms p(95)=2.37s 
+    iterations.....................: 78639  291.225051/s
+    vus............................: 1      min=0          max=200
+    vus_max........................: 200    min=200        max=200
+
+    NETWORK
+    data_received..................: 15 MB  56 kB/s
+    data_sent......................: 6.9 MB 26 kB/s
+
+
+
+
+running (4m30.0s), 000/200 VUs, 78639 complete and 0 interrupted iterations
+siege ✓ [======================================] 000/200 VUs  4m30s
+ERRO[0270] thresholds on metrics 'http_req_duration{tier:risk}' have been crossed 
