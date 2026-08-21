@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
+
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t obsidio-app ./starters/python
+
+      - name: Run container under grading caps
+        run: docker run -d --name app --cpus=2 --memory=2g -p 8080:8080 obsidio-app
+
+      - name: Wait for health check
+        run: |
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8080/health && exit 0
+            sleep 1
+          done
+          echo "Health check failed"; exit 1
+
+      - name: Install k6
+        run: |
+          curl -s https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Run k6 grading script
+        id: k6
+        run: |
+          set +e
+          k6 run --summary-export=summary.json -e TARGET=http://localhost:8080 k6/grading.js
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Estimate score
+        if: always()
+        run: |
+          if [ ! -f summary.json ]; then
+            echo "No k6 summary produced; skipping score estimate." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          SCORE=$(jq -r '.metrics.work_score.values.count // 0' summary.json)
+          PRICE_P95=$(jq -r '.metrics["http_req_duration{tier:price}"].values["p(95)"] // "n/a"' summary.json)
+          STATS_P95=$(jq -r '.metrics["http_req_duration{tier:stats}"].values["p(95)"] // "n/a"' summary.json)
+          RISK_P95=$(jq -r '.metrics["http_req_duration{tier:risk}"].values["p(95)"] // "n/a"' summary.json)
+          FAIL_RATE=$(jq -r '.metrics.http_req_failed.values.rate // "n/a"' summary.json)
+
+          {
+            echo "## Obsidio score estimate"
+            if [ "${{ steps.k6.outputs.exit_code }}" = "0" ]; then
+              echo "**Qualified** — all thresholds passed."
+            else
+              echo "**Did NOT qualify** — one or more thresholds failed. This score would not count on the real leaderboard."
+            fi
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Estimated work_score | **$SCORE** |"
+            echo "| /price p95 | ${PRICE_P95} ms (bar: <200) |"
+            echo "| /stats p95 | ${STATS_P95} ms (bar: <500) |"
+            echo "| /risk p95 | ${RISK_P95} ms (bar: <1500) |"
+            echo "| error rate | ${FAIL_RATE} (bar: <0.01) |"
+            echo ""
+            echo "_Estimate only: this runner is not the 2 CPU / 2 GB grading box, and the k6 check only verifies HTTP 200, not the per-request latency budget the official score also requires._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs app
+
+      - name: Fail job if thresholds were not met
+        if: always()
+        run: exit ${{ steps.k6.outputs.exit_code }}
