@@ -91,10 +91,7 @@ def update_price(update: PriceUpdate):
     }
 
 # Number of hashes completed before giving the event loop a chance to run.
-RISK_CHUNK_SIZE = 5000
-
-# Caps how many risk jobs can be admitted at once
-RISK_SLOTS = LifoSemaphore(int(os.environ.get("RISK_SLOTS", 7)))
+RISK_CHUNK_SIZE = 4250 
 
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
