@@ -1,2 +1,2 @@
-slots,queue_timeout,wait_timeout,work_score,risk_p95_ms,price_p95_ms,stats_p95_ms,error_rate,qualified
-2,0.8,1.6,222035,1304.1433701999995,220.647617,220.74316940000003,0.07498759656956552,no
+work_score,risk_p95_ms,price_p95_ms,stats_p95_ms,error_rate,qualified
+91679,13207.788380799999,198.0989871,199.46492659999998,0,no
