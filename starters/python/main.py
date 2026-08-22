@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import asyncio
 import fcntl
+import hashlib
 
 app = FastAPI()
 # Shared lock across Uvicorn processes.
@@ -41,7 +42,7 @@ def health():
 
 # CHEAP (weight 1)
 @app.get("/price")
-def price(symbol: str):
+async def price(symbol: str):
     if symbol not in PRICES:
         raise HTTPException(status_code=404, detail="unknown symbol")
 
@@ -53,7 +54,7 @@ def price(symbol: str):
 
 # MEDIUM (weight 3)
 @app.get("/stats")
-def stats(symbol: str):
+async def stats(symbol: str):
     series = SERIES.get(symbol)
 
     if series is None:
@@ -87,24 +88,24 @@ def update_price(update: PriceUpdate):
         "price": update.price
     }
 
+# Number of hashes completed before giving the event loop a chance to run.
+RISK_CHUNK_SIZE = 5000
+
+
+async def calculate_risk_cooperative(seed: str):
+    h = seed
+
+    for i in range(50000):
+        h = hashlib.sha256(h.encode()).hexdigest()
+
+        # Let lightweight requests run between chunks.
+        if (i + 1) % RISK_CHUNK_SIZE == 0:
+            await asyncio.sleep(0)
+
+    return h
 
 # HEAVY (weight 10): 50000 SHA-256 iterations.
 @app.get("/risk")
 async def risk(seed: str = "none"):
-    # Only allow one direct risk calculation at a time across both workers.
-    with open(RISK_LOCK_FILE, "w") as lock_file:
-        await asyncio.to_thread(
-            fcntl.flock,
-            lock_file.fileno(),
-            fcntl.LOCK_EX
-        )
-
-        try:
-            h = calculate_risk(seed)
-        finally:
-            fcntl.flock(
-                lock_file.fileno(),
-                fcntl.LOCK_UN
-            )
-
+    h = await calculate_risk_cooperative(seed)
     return {"seed": seed, "risk_hash": h}
