@@ -250,3 +250,82 @@ convert some rejections into slow successes:
 watching for where p95 creeps toward 1500ms (but doesn't cross) while
 error_rate drops. If it barely moves even with generous timeouts, the ~7%
 floor is a real capacity limit, not a tuning problem.
+
+New branch: LIFQ-and-cut-in-line-of-risk-(MLFQ)-approach
+
+Trying LIFO admission instead of FIFO. Under sustained overload, FIFO means
+every fresh arrival queues up behind an ever-growing backlog and the whole
+burst tends to time out together -- a request that arrives at a moment we
+could actually serve still gets stuck waiting behind older, already-doomed
+ones. LIFO lets fresh arrivals jump the backlog and get served while
+they're still useful, sacrificing the stale backlog instead (which was
+likely going to time out anyway).
+
+asyncio.Semaphore has no built-in option for this -- release() always
+wakes the OLDEST waiter (_wake_up_next scans self._waiters oldest-to-
+newest). Added a LifoSemaphore(asyncio.Semaphore) subclass in main.py that
+overrides just _wake_up_next to scan reversed(self._waiters) instead --
+newest waiter wakes first. Everything else (acquire/release, the
+cancellation/race bookkeeping) reused unchanged from the base class.
+RISK_SLOTS is now a LifoSemaphore instead of asyncio.Semaphore.
+
+Verified in isolation first (standalone script, 3 queued waiters, held
+permit released) -- wake order came back exact reverse of arrival order
+(third, second, first), confirmed correct before touching the real app.
+Then rebuilt and smoke-tested in the container: single call still works,
+15-request burst gives a healthy mix of 200/503, no crashes.
+
+Not swept against the FIFO baseline yet -- next step is running it through
+sweep-risk-params.sh and comparing against slots=2/timeout=0.8/wait=1.6's
+FIFO numbers above (work_score=300711, error_rate=7.01%).
+
+Deleted RISK_WAIT_TIMEOUT to test without it -- bad, error rate 10-53%.
+Cause: `h` was only ever assigned inside the commented-out try block, so
+every /risk request crashed with NameError (500), not a real behavior
+change. Fixed: `h = await result_of_risk` with no timeout wrapper.
+
+LIFO result: it did not change the error rate, the speed is way lower than 1500, good
+
+Neither timeout knob (queue or wait) moved error_rate either, and LIFO alone
+didn't beat FIFO -- error stuck around 7% no matter what. Conclusion: this
+is the hard capacity floor (error_rate_floor ~ 1 - capacity/offered_load)
+at RISK_SLOTS=2, not a tuning problem. Raising RISK_SLOTS adds capacity but
+previously cost /price//stats latency (contention for the same 2 CPUs).
+
+Fix: os.nice(15) on risk-pool worker processes (via ProcessPoolExecutor's
+initializer= arg), added _deprioritize_risk_worker(). Kernel now favors
+/price//stats (nice=0) over risk workers (nice=15) whenever both want the
+CPU at the same time -- risk still gets full CPU when nothing else needs
+it, only yields under real contention. Not pinning (no hard partition,
+no permanent cap on risk's ceiling).
+
+Verified directly, not just "didn't crash": checked /proc/*/stat while
+risk requests were in flight -- risk-pool workers showed nice=15, uvicorn/
+API processes showed nice=0. Confirmed the split is real.
+
+Point of this: should let RISK_SLOTS go back up (toward 3-5) for more real
+risk capacity WITHOUT the /price//stats cost we saw before. Next: sweep
+RISK_SLOTS=(2 3 5) again with nice in place and see if error_rate finally
+drops.
+
+Ran RISK_SLOTS=(2 3 5), timeout/wait fixed at 0.8:
+  slots  error_rate  price_p95  stats_p95
+  2      7.59%       182ms ok   183ms ok
+  3      6.62%       291ms BAD  291ms ok
+  5      5.71%       407ms BAD  408ms ok (close)
+
+error_rate does trend down as slots rises, but it's not free: price breaks
+at slots=3+, and even at slots=5 error is still 5.7x over the 1% bar --
+nowhere near qualifying. Also nice(15) doesn't look like it's actually
+helping much -- slots=5 price_p95 now (407ms) is barely different from
+slots=5 price_p95 BEFORE nice was added (416ms). Raising slots is trading
+one failing metric for two, not progress.
+
+Going back to slots=2 (where price/stats are healthy) and trying the
+retry idea instead: spend the unused risk p95 margin (911ms vs 1500ms
+cap, ~589ms slack) on retries rather than instant rejection, instead of
+touching slots at all. When RISK_SLOTS.acquire() times out, retry instead
+of failing -- under LIFO each retry re-enters as the newest waiter, so it
+jumps back to the front instead of just sitting in place. Capped by a
+total time budget (not unlimited retries) so it still fails eventually
+instead of hanging forever.

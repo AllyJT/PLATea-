@@ -20,7 +20,9 @@ from concurrent.futures import ProcessPoolExecutor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from multiprocessing import Pool
-import time 
+import time
+
+from lifoSemaphore import LifoSemaphore
 
 app = FastAPI()
 
@@ -71,20 +73,50 @@ def update_price(update: PriceUpdate):
     PRICES[update.symbol] = update.price
     return {"symbol": update.symbol, "price": update.price}
 
-# Prioritize the /price and /stats endpoints over /risk, 
-# so that a heavy /risk request does not block the others. 
+# Prioritize the /price and /stats endpoints over /risk,
+# so that a heavy /risk request does not block the others.
 
-RISK_POOL = ProcessPoolExecutor(max_workers=5)
+
+def _deprioritize_risk_worker():
+    """Runs once at startup in each risk-pool worker process. Lowers this
+    process's OS scheduling priority (nice) so the kernel favors /price and
+    /stats -- which run at normal priority -- whenever both want the CPU
+    at the same moment. Unlike CPU pinning, a niced-down process still
+    gets to use full CPU (even both cores) whenever nothing higher-
+    priority needs it; it only yields under actual contention. This is
+    what lets RISK_SLOTS be raised for more real risk-tier capacity
+    without that costing /price / /stats latency the way it did before."""
+    os.nice(15)
+
+
+RISK_POOL = ProcessPoolExecutor(max_workers=5, initializer=_deprioritize_risk_worker)
 ## Semaphore limits the number of concurrent risk calculations;
 ## env-tunable
 ## so sweep-risk-params.sh can search RISK_SLOTS / RISK_QUEUE_TIMEOUT.
-RISK_SLOTS = asyncio.Semaphore(int(os.environ.get("RISK_SLOTS", 2)))
-RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1))
+# Change from First in First out to Last in First out, reduce the time wait-z
+RISK_SLOTS = LifoSemaphore(int(os.environ.get("RISK_SLOTS", 2)))
 
-BASE_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.0))
-BASE_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2.0))
-# ADD: A second time out for those so we can cut the one waiting too long
-RISK_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2))
+# Total time willing to keep retrying for a slot before actually giving up
+# (503). Spends risk's unused p95 margin on retries instead of rejecting
+# on the first miss. Because RISK_SLOTS is a LifoSemaphore, each retry
+# re-enters the queue as the NEWEST waiter -- it jumps back to the front
+# instead of just sitting in place, so retrying is not the same as a
+# longer single wait.
+RISK_ADMIT_BUDGET = float(os.environ.get("RISK_ADMIT_BUDGET", 1.2))
+
+
+async def _acquire_with_retry(sem, total_budget):
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while True:
+        remaining = total_budget - (loop.time() - start)
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=remaining)
+            return
+        except asyncio.TimeoutError:
+            continue  # re-enter as the newest LIFO waiter, try again
 
 
 
@@ -108,24 +140,11 @@ RISK_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2))
 #     return {"seed": seed, "risk_hash": h}
 
 async def risk(seed: str = "none"):
-        # DYNAMIC ALLOCATION LOGIC:
-    # Check how many requests are currently waiting in the semaphore queue
-    # As queue length grows, aggressively shorten the allowed timeouts
-    _waiters = getattr(RISK_SLOTS, "_waiters", None)
-    queue_length = len(_waiters) if _waiters else 0
-    
-    # Scale factor shrinks exponentially as the queue backs up
-    scale_factor = 1.0 / (1.0 + queue_length)
-    
-    dynamic_queue_timeout = max(0.05, BASE_QUEUE_TIMEOUT * scale_factor)
-    dynamic_wait_timeout = max(0.10, BASE_WAIT_TIMEOUT * scale_factor)
     try:
-        ## Try to acquire a slot for risk calculation,
-        ## add a time out so we can return a 503 if the risk service is overloaded
-        await asyncio.wait_for(
-            RISK_SLOTS.acquire(),
-            timeout=RISK_QUEUE_TIMEOUT
-        )
+        ## Try to acquire a slot for risk calculation, retrying (as the
+        ## newest LIFO waiter each time) until RISK_ADMIT_BUDGET runs out,
+        ## instead of giving up on the first miss.
+        await _acquire_with_retry(RISK_SLOTS, RISK_ADMIT_BUDGET)
         ## if it is overloaded, return a 503 error
     except asyncio.TimeoutError:
         raise HTTPException(
@@ -145,12 +164,6 @@ async def risk(seed: str = "none"):
     # letting more jobs pile up than RISK_SLOTS was meant to allow.
     result_of_risk.add_done_callback(lambda _: RISK_SLOTS.release())
 
-    try:
-        h = await asyncio.wait_for(result_of_risk, timeout=RISK_WAIT_TIMEOUT)
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=503,
-            detail="risk service overloaded"
-        )
+    h = await result_of_risk
 
     return {"seed": seed, "risk_hash": h}
