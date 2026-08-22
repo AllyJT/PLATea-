@@ -329,3 +329,32 @@ of failing -- under LIFO each retry re-enters as the newest waiter, so it
 jumps back to the front instead of just sitting in place. Capped by a
 total time budget (not unlimited retries) so it still fails eventually
 instead of hanging forever.
+
+Summary 22/8/2026, major changes only, why we stopped each one, numbers:
+
+- async risk + await: let price/stats interleave with risk. price 4.63ms,
+  stats 5.11ms, error 0%, but risk alone p95=8.11s vs 1500ms bar. stopped:
+  risk needed real capacity control, not just cooperative yielding.
+- pool workers 1->4: error rate dropped but price/stats collapsed:
+  price_p95=1.27s, stats_p95=1.28s, error=7.10%. stopped: more workers ate
+  the CPU price/stats needed.
+- fixed premature semaphore release (was freeing on client giveup instead
+  of job finishing) -- let more jobs pile into the one worker than
+  intended. fixed with a done_callback release instead.
+- slots=2 vs 3 tuning: slots=2 won, work_score=300711, risk_p95=1109ms,
+  error=7.01% vs slots=3's 224441/1378ms/6.26%. stopped tuning slots/
+  timeouts: neither knob moved error_rate off ~7% -- hard capacity floor,
+  not a tuning problem.
+- LIFO admission (LifoSemaphore): error rate unchanged (~7%), risk stayed
+  well under cap. stopped: LIFO alone doesn't fix a capacity floor.
+- os.nice(15) + raising slots to 3/5: error dropped 7.59%->5.71%, but price
+  broke at slots>=3 (291ms, then 407ms), and nice() barely differed from
+  pre-nice numbers. stopped: trading one failing metric for two.
+- retry-with-LIFO-requeue (RISK_ADMIT_BUDGET) at slots=2: designed to spend
+  risk's ~589ms slack on retries instead of instant 503s. never swept with
+  real data -- reverted to a clean baseline before finishing this branch.
+- reverted to naive (no admission control at all) for a clean baseline:
+  work_score=91679, risk_p95=13207ms(!), price=198ms, stats=199ms,
+  error=0%. confirms: no cutoff = 0% errors but risk latency unbounded.
+- current step: added RISK_SLOTS=10 cap back, no timeout yet -- first
+  layer of "add the cutoff slowly," result pending.
