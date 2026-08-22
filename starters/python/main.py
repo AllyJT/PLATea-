@@ -19,6 +19,7 @@ from risk import calculate_risk
 from concurrent.futures import ProcessPoolExecutor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from multiprocessing import Pool
 import time 
 
 app = FastAPI()
@@ -73,15 +74,15 @@ def update_price(update: PriceUpdate):
 # Prioritize the /price and /stats endpoints over /risk, 
 # so that a heavy /risk request does not block the others. 
 
-RISK_POOL = ProcessPoolExecutor(max_workers=1)
+RISK_POOL = ProcessPoolExecutor(max_workers=5)
 ## Semaphore limits the number of concurrent risk calculations;
 ## env-tunable
 ## so sweep-risk-params.sh can search RISK_SLOTS / RISK_QUEUE_TIMEOUT.
 RISK_SLOTS = asyncio.Semaphore(int(os.environ.get("RISK_SLOTS", 2)))
-RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1))
-
+BASE_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.0))
 # ADD: A second time out for those so we can cut the one waiting too long
-RISK_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2))
+BASE_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2.0))
+
 
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
@@ -104,12 +105,23 @@ RISK_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2))
 #     return {"seed": seed, "risk_hash": h}
 
 async def risk(seed: str = "none"):
+    # DYNAMIC ALLOCATION LOGIC:
+    # Check how many requests are currently waiting in the semaphore queue.
+    # As queue length grows, aggressively shorten the allowed timeouts.
+    _waiters = getattr(RISK_SLOTS, "_waiters", None)
+    queue_length = len(_waiters) if _waiters else 0
+
+    # Scale factor shrinks as the queue backs up.
+    scale_factor = 1.0 / (1.0 + queue_length)
+
+    dynamic_queue_timeout = max(0.05, BASE_QUEUE_TIMEOUT * scale_factor)
+    dynamic_wait_timeout = max(0.10, BASE_WAIT_TIMEOUT * scale_factor)
     try:
         ## Try to acquire a slot for risk calculation,
         ## add a time out so we can return a 503 if the risk service is overloaded
         await asyncio.wait_for(
             RISK_SLOTS.acquire(),
-            timeout=RISK_QUEUE_TIMEOUT
+            timeout=dynamic_queue_timeout
         )
         ## if it is overloaded, return a 503 error
     except asyncio.TimeoutError:
@@ -119,27 +131,23 @@ async def risk(seed: str = "none"):
         )
 # Running the risk calculation when we have acquired a slot
 # Calculate the risk in a separate process so it does not block the main thread
+    event_loop = asyncio.get_running_loop()
+    result_of_risk = event_loop.run_in_executor(
+        RISK_POOL, calculate_risk, seed
+    )
+    # Release the slot only once the job itself finishes (or is cancelled
+    # before it started running) -- not when the client stops waiting for
+    # it. If we released on client timeout instead, a new request could be
+    # admitted while the old job is still occupying the pool's one worker,
+    # letting more jobs pile up than RISK_SLOTS was meant to allow.
+    result_of_risk.add_done_callback(lambda _: RISK_SLOTS.release())
+
     try:
-        # keep track of which event is ready to run next
-        event_loop = asyncio.get_running_loop()
-        # calculate the risk , its being done by the process pool executor (another thread), 
-        # so it does not block the main thread
-        # the risk is being calculated in the background
-        result_of_risk = event_loop.run_in_executor(
-            RISK_POOL, calculate_risk, seed
+        h = await asyncio.wait_for(result_of_risk, timeout=dynamic_wait_timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="risk service overloaded"
         )
-        # wait for the result of the risk calculation to be ready
-        # let the low and medium endpoints run first while the risk is being calculated
 
-        try:
-            h = await asyncio.wait_for(result_of_risk, timeout=RISK_WAIT_TIMEOUT)
-        except asyncio.TimeoutError:
-            raise HTTPException(
-                status_code=503,
-                detail="risk service overloaded"
-            )
-
-        return {"seed": seed, "risk_hash": h}
-
-    finally:
-        RISK_SLOTS.release()
+    return {"seed": seed, "risk_hash": h}

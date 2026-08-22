@@ -82,3 +82,87 @@ error_rate_floor ≈ max(0, 1 − capacity / offered_load)
 capacity = num_parallel_workers / T        (requests/sec the pool can actually finish)
 offered_load = λ                            (risk-tier requests/sec k6 is sending)
 ohh, the cut in line did badly, it make the error rate go way higher
+
+Found why: when RISK_WAIT_TIMEOUT fired, I released the semaphore slot
+right away (in a finally block) even though the abandoned job was still
+running in the pool's one worker process. That let a NEW request grab the
+freed slot and queue up behind the same still-busy worker -- so more jobs
+piled into the one-worker pool than RISK_SLOTS was supposed to allow, and
+the worker wasted cycles finishing jobs whose clients had already been
+told 503 and walked away. That's why work_score cratered and error_rate
+went up instead of down.
+
+Fix: release the slot from a done_callback on the executor future itself,
+so it only frees once the job truly finishes (or is cancelled before it
+even started) -- not when the client gives up waiting. Note: cancel() only
+actually works if the job hasn't started running yet; if it's the one
+currently executing, RISK_WAIT_TIMEOUT won't cut it off early, it'll just
+keep running to completion. So it bounds queue wait, not total latency in
+every case
+
+
+after we change to 4 worker, the error when down
+soo adding worker works, and in the attack, at the end, the number of virtual people decrease when the attack
+come down, we can dynamically allocate more worker and time during huge attack
+
+  █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✗ 'p(95)<200' p(95)=1.27s
+
+    http_req_duration{tier:risk}
+    ✗ 'p(95)<1500' p(95)=2.89s
+
+    http_req_duration{tier:stats}
+    ✗ 'p(95)<500' p(95)=1.28s
+
+    http_req_failed
+    ✗ 'rate<0.01' rate=7.10%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 45057  160.270854/s
+    checks_succeeded...: 92.89% 41857 out of 45057
+    checks_failed......: 7.10%  3200 out of 45057
+
+    ✗ status is 200
+      ↳  92% — ✓ 41857 / ✗ 3200
+
+    CUSTOM
+    work_score.....................: 80955  287.962514/s
+
+    HTTP
+    http_req_duration..............: avg=518.49ms min=997.85µs med=301.96ms max=5.31s p(90)=1.2s     p(95)=1.58s
+      { expected_response:true }...: avg=443.34ms min=997.85µs med=294.58ms max=4.69s p(90)=1.09s    p(95)=1.38s
+      { tier:price }...............: avg=413.93ms min=997.85µs med=291.74ms max=4.32s p(90)=997.79ms p(95)=1.27s
+      { tier:risk }................: avg=1.45s    min=25.26ms  med=1.18s    max=5.31s p(90)=2.59s    p(95)=2.89s
+      { tier:stats }...............: avg=416.21ms min=1.11ms   med=291.05ms max=4.31s p(90)=1s       p(95)=1.28s
+    http_req_failed................: 7.10%  3200 out of 45057
+    http_reqs......................: 45057  160.270854/s
+
+    EXECUTION
+    iteration_duration.............: avg=499.05ms min=1.06ms   med=301.05ms max=5.32s p(90)=1.19s    p(95)=1.49s
+    iterations.....................: 45057  160.270854/s
+    vus............................: 6      min=0             max=199
+    vus_max........................: 200    min=200           max=200
+
+    NETWORK
+    data_received..................: 8.4 MB 30 kB/s
+    data_sent......................: 4.5 MB 16 kB/s
+
+
+
+
+running (4m41.1s), 000/200 VUs, 45057 complete and 0 interrupted iterations
+siege ✓ [ 100% ] 000/200 VUs  4m30s
+time="2026-08-22T04:49:46Z" level=error msg="thresholds on metrics 'http_req_duration{tier:price}, http_req_duration{tier:risk}, http_req_duration{tier:stats}, http_req_failed' have been crossed"
+work_score=80955 risk_p95=2896.2189879499997 error_rate=0.07102115098652817 qualified=yes
+
+=== All results (also saved to sweep-results.csv) ===
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate           qualified
+5      0.8      1.6           80955       2896.2189879499997  0.07102115098652817  yes
+huh? so our tester is not matching with our k6 so it cause some problem, we go fix it,
+this result is from the dynamic allocation of worker and time and slot.
+
+new approach, just dynamic time 

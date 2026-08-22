@@ -19,7 +19,7 @@ K6_IMAGE="grafana/k6"
 JQ_IMAGE="ghcr.io/jqlang/jq"
 RESULTS_FILE="sweep-results.csv"
 
-SLOTS_VALUES=(2 5)
+SLOTS_VALUES=(5)
 TIMEOUT_VALUES=(0.8)
 WAIT_TIMEOUT_VALUES=(1.6)
 
