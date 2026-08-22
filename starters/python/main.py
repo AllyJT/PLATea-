@@ -73,7 +73,7 @@ def update_price(update: PriceUpdate):
 # so that a heavy /risk request does not block the others. 
 
 # Each Uvicorn worker owns one risk process.
-RISK_POOL = ProcessPoolExecutor(max_workers=1)
+RISK_POOL = ProcessPoolExecutor(max_workers=4)
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
