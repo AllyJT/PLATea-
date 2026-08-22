@@ -13,12 +13,13 @@
 # do not let the server auto-size from the visible core count.
 
 import math
+import os
 from risk import calculate_risk
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import asyncio
-import fcntl
-import hashlib
+import time
+
+from lifoSemaphore import LifoSemaphore
 
 app = FastAPI()
 # Shared lock across Uvicorn processes.
@@ -79,6 +80,7 @@ class PriceUpdate(BaseModel):
     price: float
 
 
+ 
 @app.post("/price")
 def update_price(update: PriceUpdate):
     PRICES[update.symbol] = update.price
@@ -91,16 +93,32 @@ def update_price(update: PriceUpdate):
 # Number of hashes completed before giving the event loop a chance to run.
 RISK_CHUNK_SIZE = 5000
 
+# Caps how many risk jobs can be admitted at once
+RISK_SLOTS = LifoSemaphore(int(os.environ.get("RISK_SLOTS", 7)))
 
-async def calculate_risk_cooperative(seed: str):
-    h = seed
 
-    for i in range(50000):
-        h = hashlib.sha256(h.encode()).hexdigest()
+# HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
+@app.get("/risk")
+# Make the risk endpoint async so it can be pause, allow other low
+# and medium weight to run first while risk is being calculated by
+#
+async def risk(seed: str = "none"):
+    await RISK_SLOTS.acquire()
+    try:
+        # keep track of which event is ready to run next
+        event_loop = asyncio.get_running_loop()
 
-        # Let lightweight requests run between chunks.
-        if (i + 1) % RISK_CHUNK_SIZE == 0:
-            await asyncio.sleep(0)
+        # calculate the risk , its being done by the process pool executor (another thread),
+        # so it does not block the main thread
+        # the risk is being calculated in the background
+        result_of_risk = event_loop.run_in_executor(RISK_POOL, calculate_risk, seed)
+
+        # wait for the result of the risk calculation to be ready
+        # let the low and medium endpoints run first while the risk is being calculated
+        h = await result_of_risk
+        return {"seed": seed, "risk_hash": h}
+    finally:
+        RISK_SLOTS.release()
 
     return h
 
