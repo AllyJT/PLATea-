@@ -25,7 +25,10 @@ jobs:
             curl -sf http://localhost:8080/health && exit 0
             sleep 1
           done
+
           echo "Health check failed"
+          echo "===== CONTAINER LOGS ====="
+          docker logs app
           exit 1
 
       - name: Install k6
@@ -78,8 +81,8 @@ jobs:
             echo "_Estimate only: the container is capped at 2 CPU / 2 GB, but GitHub's runner hardware differs from the official grading machine._"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Show container logs on failure
-        if: always() && steps.k6.outputs.exit_code != '0'
+        - name: Show container logs on failure
+        if: failure()
         run: docker logs app
 
       - name: Fail job if thresholds were not met
