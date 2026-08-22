@@ -80,6 +80,9 @@ RISK_POOL = ProcessPoolExecutor(max_workers=1)
 RISK_SLOTS = asyncio.Semaphore(int(os.environ.get("RISK_SLOTS", 2)))
 RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1))
 
+# ADD: A second time out for those so we can cut the one waiting too long
+RISK_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2))
+
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
@@ -128,7 +131,13 @@ async def risk(seed: str = "none"):
         # wait for the result of the risk calculation to be ready
         # let the low and medium endpoints run first while the risk is being calculated
 
-        h = await result_of_risk
+        try:
+            h = await asyncio.wait_for(result_of_risk, timeout=RISK_WAIT_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=503,
+                detail="risk service overloaded"
+            )
 
         return {"seed": seed, "risk_hash": h}
 

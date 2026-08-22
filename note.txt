@@ -76,4 +76,9 @@ via environmental variables so it did not change with the sweep files, changing 
 Since we did not see much improvement with slot 8 and low timeout, we will start tuning again with slot starting from 6,
 time out starting with 0.8 and end with 1.2, the result tell us 
 we are exchanging the time out with the error rate
-I will 
+I will create a time out for the one waiting in queue to they can 
+be drop if the time wait is too long
+error_rate_floor ≈ max(0, 1 − capacity / offered_load)
+capacity = num_parallel_workers / T        (requests/sec the pool can actually finish)
+offered_load = λ                            (risk-tier requests/sec k6 is sending)
+ohh, the cut in line did badly, it make the error rate go way higher

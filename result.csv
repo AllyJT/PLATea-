@@ -32,3 +32,7 @@ slots,timeout,work_score,risk_p95_ms,error_rate,qualified
 9,0.8,326377,2120.756250399999,0.07235315268198607,no
 9,1,313446,2293.4855322000003,0.0638139346363154,no
 9,1.2,296708,2436.3397125999995,0.05554645793076344,no
+=== All results (also saved to sweep-results.csv) ===
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate           qualified
+2      0.8      1.6           189512      1717.4811720999999  0.08604494989577974  no
+5      0.8      1.6           199267      2378.014708499999   0.08695330118022748  no
