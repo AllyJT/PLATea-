@@ -7,4 +7,6 @@ COPY main.py risk.py ./
 EXPOSE 8080
 # One worker on purpose (the naive baseline). This is a knob you will want to
 # revisit once you understand the core-count note in the guide.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+
+# Use two API workers while keeping one risk process per worker.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2", "--no-access-log"]
