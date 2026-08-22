@@ -13,10 +13,18 @@ set -e
 STARTER_DIR="starters/python"
 IMAGE_NAME="obsidio-sweep"
 CONTAINER_NAME="obsidio-sweep"
+K6_IMAGE="grafana/k6"
+JQ_IMAGE="ghcr.io/jqlang/jq"
 RESULTS_FILE="sweep-results.csv"
 
-SLOTS_VALUES=(2 4 8)
-TIMEOUT_VALUES=(0.5 0.75 1.0)
+SLOTS_VALUES=(6 7 9 )
+TIMEOUT_VALUES=(0.8 1 1.2)
+
+# jq isn't installed on this machine, so run it via Docker; pipe the file in
+# over stdin (jq's default input) rather than mounting/naming it in-container.
+jq() {
+  MSYS_NO_PATHCONV=1 docker run --rm -i "$JQ_IMAGE" "$@"
+}
 
 cleanup() {
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -25,6 +33,12 @@ trap cleanup EXIT
 
 echo "Building image once ..."
 docker build -t "$IMAGE_NAME" "$STARTER_DIR"
+
+echo "Pulling k6 image once ..."
+docker pull "$K6_IMAGE" >/dev/null
+
+echo "Pulling jq image once ..."
+docker pull "$JQ_IMAGE" >/dev/null
 
 echo "slots,timeout,work_score,risk_p95_ms,error_rate,qualified" > "$RESULTS_FILE"
 
@@ -48,18 +62,19 @@ for slots in "${SLOTS_VALUES[@]}"; do
       sleep 1
     done
 
-    k6 run --summary-export=sweep-summary.json \
-      -e TARGET=http://localhost:8080 k6/grading.js || true
+    MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/work" -w /work "$K6_IMAGE" run \
+      --summary-export=sweep-summary.json \
+      -e TARGET=http://host.docker.internal:8080 k6/grading.js || true
 
     if [ -f sweep-summary.json ]; then
-      WORK_SCORE=$(jq -r '.metrics.work_score.values.count // 0' sweep-summary.json)
-      RISK_P95=$(jq -r '.metrics["http_req_duration{tier:risk}"].values["p(95)"] // "n/a"' sweep-summary.json)
-      ERROR_RATE=$(jq -r '.metrics.http_req_failed.values.rate // "n/a"' sweep-summary.json)
-      QUALIFIED=$(jq -r 'if .metrics["http_req_duration{tier:price}"].thresholds["p(95)<200"].ok
-                            and .metrics["http_req_duration{tier:stats}"].thresholds["p(95)<500"].ok
-                            and .metrics["http_req_duration{tier:risk}"].thresholds["p(95)<1500"].ok
-                            and .metrics["http_req_failed"].thresholds["rate<0.01"].ok
-                          then "yes" else "no" end' sweep-summary.json 2>/dev/null || echo "unknown")
+      WORK_SCORE=$(jq -r '.metrics.work_score.count // 0' < sweep-summary.json)
+      RISK_P95=$(jq -r '.metrics["http_req_duration{tier:risk}"]["p(95)"] // "n/a"' < sweep-summary.json)
+      ERROR_RATE=$(jq -r '.metrics.http_req_failed.value // "n/a"' < sweep-summary.json)
+      QUALIFIED=$(jq -r 'if .metrics["http_req_duration{tier:price}"].thresholds["p(95)<200"]
+                            and .metrics["http_req_duration{tier:stats}"].thresholds["p(95)<500"]
+                            and .metrics["http_req_duration{tier:risk}"].thresholds["p(95)<1500"]
+                            and .metrics["http_req_failed"].thresholds["rate<0.01"]
+                          then "yes" else "no" end' < sweep-summary.json 2>/dev/null || echo "unknown")
       echo "$slots,$timeout,$WORK_SCORE,$RISK_P95,$ERROR_RATE,$QUALIFIED" >> "$RESULTS_FILE"
       echo "work_score=$WORK_SCORE risk_p95=$RISK_P95 error_rate=$ERROR_RATE qualified=$QUALIFIED"
       rm -f sweep-summary.json

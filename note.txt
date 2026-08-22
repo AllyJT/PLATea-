@@ -59,3 +59,21 @@ record of the test run :
 running (4m30.0s), 000/200 VUs, 78639 complete and 0 interrupted iterations
 siege ✓ [======================================] 000/200 VUs  4m30s
 ERRO[0270] thresholds on metrics 'http_req_duration{tier:risk}' have been crossed 
+With worker = 2
+slots,timeout,work_score,risk_p95_ms,error_rate,qualified
+1,0.6,274669,1381.7452925,0.06552718010590522,no
+1,0.8,272138,1327.7488014499997,0.0674824799291142,no
+3,0.6,283498,1307.3439295,0.06689023955164339,no
+3,0.8,284532,1310.639573,0.06668993059594432,no
+6,0.6,282792,1308.7048032,0.06711056597161381,no
+6,0.8,279146,1379.1128228,0.06699177801292121,no
+7,0.6,278048,1372.2744831999996,0.0671912832929782,no
+7,0.8,284908,1314.0154854,0.06623287274878317,no
+- Rookie error: I forgot to change the risk slot and risk queue time out to being configurable
+via environmental variables so it did not change with the sweep files, changing the number of slot and time out for testing
+
+
+Since we did not see much improvement with slot 8 and low timeout, we will start tuning again with slot starting from 6,
+time out starting with 0.8 and end with 1.2, the result tell us 
+we are exchanging the time out with the error rate
+I will 
