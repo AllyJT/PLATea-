@@ -82,7 +82,7 @@ RISK_POOL = ProcessPoolExecutor(max_workers=1)
 # Caps how many risk jobs can be admitted at once
 RISK_SLOTS = LifoSemaphore(int(os.environ.get("RISK_SLOTS", 7)))
 
-RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.2))
+RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.4))
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
