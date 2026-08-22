@@ -12,17 +12,14 @@
 # cores. If you add uvicorn/gunicorn workers, set the count explicitly (e.g. 2);
 # do not let the server auto-size from the visible core count.
 
+import asyncio
+import hashlib
 import math
-from risk import calculate_risk
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import asyncio
-import fcntl
-import hashlib
-
 app = FastAPI()
-# Shared lock across Uvicorn processes.
-RISK_LOCK_FILE = "/tmp/obsidio-risk.lock"
+
 
 PRICES = {
     "AAPL": 187.42, "GOOG": 141.80, "MSFT": 412.30, "AMZN": 178.10,
@@ -88,8 +85,10 @@ def update_price(update: PriceUpdate):
         "price": update.price
     }
 
-# Number of hashes completed before giving the event loop a chance to run.
-RISK_CHUNK_SIZE = 4250 
+# Number of hashes completed before yielding control to the event loop.
+# Tuned to balance /risk throughput with /price and /stats responsiveness.
+RISK_CHUNK_SIZE = 4250
+
 
 async def calculate_risk_cooperative(seed: str):
     h = seed
@@ -97,11 +96,12 @@ async def calculate_risk_cooperative(seed: str):
     for i in range(50000):
         h = hashlib.sha256(h.encode()).hexdigest()
 
-        # Let lightweight requests run between chunks.
+        # Let lightweight requests run between CPU-heavy chunks.
         if (i + 1) % RISK_CHUNK_SIZE == 0:
             await asyncio.sleep(0)
 
     return h
+
 
 # HEAVY (weight 10): 50000 SHA-256 iterations.
 @app.get("/risk")
