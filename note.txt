@@ -166,3 +166,87 @@ huh? so our tester is not matching with our k6 so it cause some problem, we go f
 this result is from the dynamic allocation of worker and time and slot.
 
 new approach, just dynamic time 
+
+
+
+  █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✗ 'p(95)<200' p(95)=416.11ms
+
+    http_req_duration{tier:risk}
+    ✗ 'p(95)<1500' p(95)=1.71s
+
+    http_req_duration{tier:stats}
+    ✓ 'p(95)<500' p(95)=421.24ms
+
+    http_req_failed
+    ✗ 'rate<0.01' rate=4.35%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 81790  290.926007/s
+    checks_succeeded...: 95.64% 78225 out of 81790
+    checks_failed......: 4.35%  3565 out of 81790
+
+    ✗ status is 200
+      ↳  95% — ✓ 78225 / ✗ 3565
+
+    CUSTOM
+    work_score.....................: 169103 601.497257/s
+
+    HTTP
+    http_req_duration..............: avg=285.43ms min=1.02ms  med=195.6ms  max=3.33s p(90)=700.7ms  p(95)=1s      
+      { expected_response:true }...: avg=253.96ms min=1.02ms  med=192.28ms max=3.33s p(90)=416.09ms p(95)=890.52ms
+      { tier:price }...............: avg=194.96ms min=1.02ms  med=187.83ms max=1.93s p(90)=392.92ms p(95)=416.11ms
+      { tier:risk }................: avg=1.09s    min=25.04ms med=997.07ms max=3.33s p(90)=1.59s    p(95)=1.71s   
+      { tier:stats }...............: avg=196.91ms min=1.08ms  med=189.02ms max=1.93s p(90)=394.03ms p(95)=421.24ms
+    http_req_failed................: 4.35%  3565 out of 81790
+    http_reqs......................: 81790  290.926007/s
+
+    EXECUTION
+    iteration_duration.............: avg=274.41ms min=1.07ms  med=195.46ms max=2.09s p(90)=587.27ms p(95)=993.9ms 
+    iterations.....................: 81790  290.926007/s
+    vus............................: 1      min=0             max=199
+    vus_max........................: 200    min=200           max=200
+
+    NETWORK
+    data_received..................: 15 MB  55 kB/s
+    data_sent......................: 8.1 MB 29 kB/s
+
+
+
+
+running (4m41.1s), 000/200 VUs, 81790 complete and 0 interrupted iterations
+siege ✓ [ 100% ] 000/200 VUs  4m30s
+time="2026-08-22T05:37:58Z" level=error msg="thresholds on metrics 'http_req_duration{tier:price}, http_req_duration{tier:risk}, http_req_failed' have been crossed"
+work_score=169103 risk_p95=1714.7773316999999 error_rate=0.0435872356033745 qualified=no
+
+=== All results (also saved to sweep-results.csv) ===
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate          qualified
+5      0.8      1.6           169103      1714.7773316999999  0.0435872356033745  no
+the price and stat is falling, noooooooooo
+so we fix it
+
+RISK_SLOTS=5 was letting too many risk processes run at once, eating CPU
+that /price and /stats need -- "another pool" isn't "another CPU," it's
+still the same 2 cores shared by everything. Dropped slots down to compare:
+
+slots  timeout  wait_timeout  work_score  risk_p95_ms          error_rate            qualified
+2      0.8      1.6           300711      1109.4284878999997   0.0701107895477941    no
+3      0.8      1.6           224441      1377.925501          0.06259266045876297   no
+
+slots=2 wins clearly: higher work_score, lower p95, more margin under the
+1500ms cap (391ms of slack unused). error_rate still ~7%, way over the 1%
+bar, on both.
+
+Next: a 503 hurts error_rate directly, a slow-but-successful 200 doesn't.
+slots=2 has slack to spend, so try loosening the TIMEOUTS (not slots) to
+convert some rejections into slow successes:
+  SLOTS_VALUES=(2)
+  TIMEOUT_VALUES=(0.8 1.0 1.2)
+  WAIT_TIMEOUT_VALUES=(1.6 2.0 2.4)
+watching for where p95 creeps toward 1500ms (but doesn't cross) while
+error_rate drops. If it barely moves even with generous timeouts, the ~7%
+floor is a real capacity limit, not a tuning problem.

@@ -79,9 +79,12 @@ RISK_POOL = ProcessPoolExecutor(max_workers=5)
 ## env-tunable
 ## so sweep-risk-params.sh can search RISK_SLOTS / RISK_QUEUE_TIMEOUT.
 RISK_SLOTS = asyncio.Semaphore(int(os.environ.get("RISK_SLOTS", 2)))
+RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1))
+
 BASE_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.0))
-# ADD: A second time out for those so we can cut the one waiting too long
 BASE_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2.0))
+# ADD: A second time out for those so we can cut the one waiting too long
+RISK_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2))
 
 
 
@@ -105,15 +108,15 @@ BASE_WAIT_TIMEOUT = float(os.environ.get("RISK_WAIT_TIMEOUT", 2.0))
 #     return {"seed": seed, "risk_hash": h}
 
 async def risk(seed: str = "none"):
-    # DYNAMIC ALLOCATION LOGIC:
-    # Check how many requests are currently waiting in the semaphore queue.
-    # As queue length grows, aggressively shorten the allowed timeouts.
+        # DYNAMIC ALLOCATION LOGIC:
+    # Check how many requests are currently waiting in the semaphore queue
+    # As queue length grows, aggressively shorten the allowed timeouts
     _waiters = getattr(RISK_SLOTS, "_waiters", None)
     queue_length = len(_waiters) if _waiters else 0
-
-    # Scale factor shrinks as the queue backs up.
+    
+    # Scale factor shrinks exponentially as the queue backs up
     scale_factor = 1.0 / (1.0 + queue_length)
-
+    
     dynamic_queue_timeout = max(0.05, BASE_QUEUE_TIMEOUT * scale_factor)
     dynamic_wait_timeout = max(0.10, BASE_WAIT_TIMEOUT * scale_factor)
     try:
@@ -121,7 +124,7 @@ async def risk(seed: str = "none"):
         ## add a time out so we can return a 503 if the risk service is overloaded
         await asyncio.wait_for(
             RISK_SLOTS.acquire(),
-            timeout=dynamic_queue_timeout
+            timeout=RISK_QUEUE_TIMEOUT
         )
         ## if it is overloaded, return a 503 error
     except asyncio.TimeoutError:
@@ -143,7 +146,7 @@ async def risk(seed: str = "none"):
     result_of_risk.add_done_callback(lambda _: RISK_SLOTS.release())
 
     try:
-        h = await asyncio.wait_for(result_of_risk, timeout=dynamic_wait_timeout)
+        h = await asyncio.wait_for(result_of_risk, timeout=RISK_WAIT_TIMEOUT)
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=503,

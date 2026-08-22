@@ -46,3 +46,64 @@ slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate        
 5      0.8      1.6           168330      1701.7294861999999  0.043992257558680845  no
 worker 5
 5      0.8      1.6           166578      1709.3715289999998  0.04429779742191251  no
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate           qualified
+5      0.8      1.6           110257      1329.5682827999995  0.05167271551259477  no
+
+coolll
+ █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✓ 'p(95)<200' p(95)=27.93ms
+
+    http_req_duration{tier:risk}
+    ✓ 'p(95)<1500' p(95)=17.95ms
+
+    http_req_duration{tier:stats}
+    ✓ 'p(95)<500' p(95)=28.17ms
+
+    http_req_failed
+    ✗ 'rate<0.01' rate=10.51%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 127539 411.139485/s
+    checks_succeeded...: 89.48% 114130 out of 127539
+    checks_failed......: 10.51% 13409 out of 127539
+
+    ✗ status is 200
+      ↳  89% — ✓ 114130 / ✗ 13409
+
+    CUSTOM
+    work_score.....................: 190048 612.645832/s
+
+    HTTP
+    http_req_duration..............: avg=58.74ms  min=0s       med=5.61ms max=31.24s p(90)=20.49ms p(95)=27.2ms 
+      { expected_response:true }...: avg=24.5ms   min=978.73µs med=5.66ms max=20.85s p(90)=21.12ms p(95)=27.83ms
+      { tier:price }...............: avg=58.17ms  min=0s       med=5.56ms max=31.24s p(90)=21.09ms p(95)=27.93ms
+      { tier:risk }................: avg=61.59ms  min=0s       med=5.47ms max=31.24s p(90)=13.84ms p(95)=17.95ms
+      { tier:stats }...............: avg=58.9ms   min=0s       med=5.78ms max=31.24s p(90)=21.38ms p(95)=28.17ms
+    http_req_failed................: 10.51% 13409 out of 127539
+    http_reqs......................: 127539 411.139485/s
+
+    EXECUTION
+    iteration_duration.............: avg=196.07ms min=1.03ms   med=6.04ms max=30.01s p(90)=21.46ms p(95)=28.94ms
+    iterations.....................: 127539 411.139485/s
+    vus............................: 1      min=0               max=200
+    vus_max........................: 200    min=200             max=200
+
+    NETWORK
+    data_received..................: 23 MB  76 kB/s
+    data_sent......................: 13 MB  42 kB/s
+
+
+
+
+running (5m10.2s), 000/200 VUs, 127539 complete and 0 interrupted iterations
+siege ✓ [ 100% ] 000/200 VUs  4m30s
+time="2026-08-22T05:26:31Z" level=error msg="thresholds on metrics 'http_req_failed' have been crossed"
+work_score=190048 risk_p95=17.954113149999998 error_rate=0.10513646806075004 qualified=no
+
+=== All results (also saved to sweep-results.csv) ===
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate           qualified
+5      0.8      1.6           190048      17.954113149999998  0.10513646806075004  no
