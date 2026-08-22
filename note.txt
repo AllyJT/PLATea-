@@ -380,3 +380,22 @@ inside the pool -- that's what got risk_p95 under the 1500ms bar.
 Also: tried RISK_POOL max_workers=2 earlier, made things worse (risk hit
 3.8s) -- 2 risk workers + 2 uvicorn workers is 4 processes fighting over
 2 CPUs, full oversubscription. Reverted back to max_workers=1.
+
+Re-ran the same slots=7 config a couple more times -- NOT stable. 2nd run
+risk_p95 way high, 3rd run 7.8s.
+
+Tried adding a safety net: RISK_QUEUE_TIMEOUT=1.5s on top of slots=7,
+no-timeout LIFO. Made it worse, not better: risk_p95=9.53s (vs 7.8s
+without it), error_rate stayed fine (0.34%). Why: k6's grading script is
+closed-loop -- each VU waits for its response then sends the next one.
+With no timeout, a starved VU is stuck, which accidentally acts as free
+backpressure (can't generate new load while stuck). Add a 503 cutoff and
+that VU immediately fires a NEW /risk request instead -- turns every
+timeout into a fresh arrival, a retry storm that recycles load faster
+than it would've drained on its own. Reverted RISK_QUEUE_TIMEOUT, back to
+unbounded LIFO wait.
+
+Next to try: drop RISK_SLOTS way down toward the real worker count (7->1
+or 2) instead of adding a timeout -- shrinks the blind FIFO backlog
+inside the pool (a timeout can't touch that anyway, it only bounds the
+semaphore wait) without triggering the retry-storm problem.
