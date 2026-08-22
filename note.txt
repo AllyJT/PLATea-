@@ -358,3 +358,25 @@ Summary 22/8/2026, major changes only, why we stopped each one, numbers:
   error=0%. confirms: no cutoff = 0% errors but risk latency unbounded.
 - current step: added RISK_SLOTS=10 cap back, no timeout yet -- first
   layer of "add the cutoff slowly," result pending.
+
+FIRST PASS 22/8/2026: RISK_SLOTS=7, RISK_POOL max_workers=1, LIFO
+semaphore, no queue timeout. ALL FOUR THRESHOLDS PASS, qualified=yes.
+  work_score=250762  risk_p95=1353.8ms  price_p95=4.71ms  stats_p95=4.98ms
+  error_rate=0.246%
+
+Got here by: benchmarked calculate_risk() in isolation (no server, no
+load) -- raw compute is only ~27ms/call, so the multi-second latencies
+under load were almost entirely queueing, not real compute cost. Found
+ProcessPoolExecutor's internal task queue is plain FIFO regardless of
+LIFO admission -- once a job is submitted to the pool it queues FIFO
+behind whatever else got submitted first, so LIFO only helps the ones
+still waiting at the semaphore, not the ones already sitting in the
+pool's own backlog. With RISK_SLOTS=10 and 1 worker, up to 9 jobs could
+be stuck in that blind FIFO queue at once, wasting the LIFO reordering.
+Dropped RISK_SLOTS down toward the worker count (10 -> 7) so most
+requests queue at the semaphore (where LIFO actually applies) instead of
+inside the pool -- that's what got risk_p95 under the 1500ms bar.
+
+Also: tried RISK_POOL max_workers=2 earlier, made things worse (risk hit
+3.8s) -- 2 risk workers + 2 uvicorn workers is 4 processes fighting over
+2 CPUs, full oversubscription. Reverted back to max_workers=1.
