@@ -12,18 +12,14 @@
 # cores. If you add uvicorn/gunicorn workers, set the count explicitly (e.g. 2);
 # do not let the server auto-size from the visible core count.
 
+import asyncio
+import hashlib
 import math
-import os
-from risk import calculate_risk
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import time
-
-from lifoSemaphore import LifoSemaphore
-
 app = FastAPI()
-# Shared lock across Uvicorn processes.
-RISK_LOCK_FILE = "/tmp/obsidio-risk.lock"
+
 
 PRICES = {
     "AAPL": 187.42, "GOOG": 141.80, "MSFT": 412.30, "AMZN": 178.10,
@@ -90,34 +86,18 @@ def update_price(update: PriceUpdate):
         "price": update.price
     }
 
-# Number of hashes completed before giving the event loop a chance to run.
-RISK_CHUNK_SIZE = 4250 
+# Number of hashes completed before yielding control to the event loop.
+# Tuned to balance /risk throughput with /price and /stats responsiveness.
+RISK_CHUNK_SIZE = 4250
 
 
-# HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
-@app.get("/risk")
-# Make the risk endpoint async so it can be pause, allow other low
-# and medium weight to run first while risk is being calculated by
-#
-async def risk(seed: str = "none"):
-    await RISK_SLOTS.acquire()
-    try:
-        # keep track of which event is ready to run next
-        event_loop = asyncio.get_running_loop()
 
-        # calculate the risk , its being done by the process pool executor (another thread),
-        # so it does not block the main thread
-        # the risk is being calculated in the background
-        result_of_risk = event_loop.run_in_executor(RISK_POOL, calculate_risk, seed)
-
-        # wait for the result of the risk calculation to be ready
-        # let the low and medium endpoints run first while the risk is being calculated
-        h = await result_of_risk
-        return {"seed": seed, "risk_hash": h}
-    finally:
-        RISK_SLOTS.release()
+        # Let lightweight requests run between CPU-heavy chunks.
+        if (i + 1) % RISK_CHUNK_SIZE == 0:
+            await asyncio.sleep(0)
 
     return h
+
 
 # HEAVY (weight 10): 50000 SHA-256 iterations.
 @app.get("/risk")
