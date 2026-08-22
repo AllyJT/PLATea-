@@ -89,7 +89,7 @@ def update_price(update: PriceUpdate):
     }
 
 # Number of hashes completed before giving the event loop a chance to run.
-RISK_CHUNK_SIZE = 5000
+RISK_CHUNK_SIZE = 4500
 
 async def calculate_risk_cooperative(seed: str):
     h = seed
