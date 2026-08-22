@@ -1,3 +1,402 @@
-Changing afternoon 21/8/2026
+### Changing afternoon 21/8/2026
+# Ally: 
 - changing def risk into async def risk: make the function pausable, give the running slot to the quicker function
 - add await to pause the function
+
+record of the test run : 
+     scenarios: (100.00%) 1 scenario, 200 max VUs, 5m0s max duration (incl. graceful stop):
+              * siege: Up to 200 looping VUs for 4m30s over 4 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+
+  █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✓ 'p(95)<200' p(95)=4.63ms
+
+    http_req_duration{tier:risk}
+    ✗ 'p(95)<1500' p(95)=8.11s
+
+    http_req_duration{tier:stats}
+    ✓ 'p(95)<500' p(95)=5.11ms
+
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 78639   291.225051/s
+    checks_succeeded...: 100.00% 78639 out of 78639
+    checks_failed......: 0.00%   0 out of 78639
+
+    ✓ status is 200
+
+    CUSTOM
+    work_score.....................: 196106 726.242447/s
+
+    HTTP
+    http_req_duration..............: avg=290.5ms  min=504.8µs med=1.78ms max=9.42s    p(90)=53.12ms p(95)=2.37s 
+      { expected_response:true }...: avg=290.5ms  min=504.8µs med=1.78ms max=9.42s    p(90)=53.12ms p(95)=2.37s 
+      { tier:price }...............: avg=2.7ms    min=504.8µs med=1.65ms max=169.95ms p(90)=2.78ms  p(95)=4.63ms
+      { tier:risk }................: avg=2.89s    min=40.36ms med=2.39s  max=9.42s    p(90)=6.94s   p(95)=8.11s 
+      { tier:stats }...............: avg=2.89ms   min=506.8µs med=1.86ms max=102.06ms p(90)=3ms     p(95)=5.11ms
+    http_req_failed................: 0.00%  0 out of 78639
+    http_reqs......................: 78639  291.225051/s
+
+    EXECUTION
+    iteration_duration.............: avg=290.66ms min=504.8µs med=2.12ms max=9.42s    p(90)=53.54ms p(95)=2.37s 
+    iterations.....................: 78639  291.225051/s
+    vus............................: 1      min=0          max=200
+    vus_max........................: 200    min=200        max=200
+
+    NETWORK
+    data_received..................: 15 MB  56 kB/s
+    data_sent......................: 6.9 MB 26 kB/s
+
+
+
+
+running (4m30.0s), 000/200 VUs, 78639 complete and 0 interrupted iterations
+siege ✓ [======================================] 000/200 VUs  4m30s
+ERRO[0270] thresholds on metrics 'http_req_duration{tier:risk}' have been crossed 
+With worker = 2
+slots,timeout,work_score,risk_p95_ms,error_rate,qualified
+1,0.6,274669,1381.7452925,0.06552718010590522,no
+1,0.8,272138,1327.7488014499997,0.0674824799291142,no
+3,0.6,283498,1307.3439295,0.06689023955164339,no
+3,0.8,284532,1310.639573,0.06668993059594432,no
+6,0.6,282792,1308.7048032,0.06711056597161381,no
+6,0.8,279146,1379.1128228,0.06699177801292121,no
+7,0.6,278048,1372.2744831999996,0.0671912832929782,no
+7,0.8,284908,1314.0154854,0.06623287274878317,no
+- Rookie error: I forgot to change the risk slot and risk queue time out to being configurable
+via environmental variables so it did not change with the sweep files, changing the number of slot and time out for testing
+
+
+Since we did not see much improvement with slot 8 and low timeout, we will start tuning again with slot starting from 6,
+time out starting with 0.8 and end with 1.2, the result tell us 
+we are exchanging the time out with the error rate
+I will create a time out for the one waiting in queue to they can 
+be drop if the time wait is too long
+error_rate_floor ≈ max(0, 1 − capacity / offered_load)
+capacity = num_parallel_workers / T        (requests/sec the pool can actually finish)
+offered_load = λ                            (risk-tier requests/sec k6 is sending)
+ohh, the cut in line did badly, it make the error rate go way higher
+
+Found why: when RISK_WAIT_TIMEOUT fired, I released the semaphore slot
+right away (in a finally block) even though the abandoned job was still
+running in the pool's one worker process. That let a NEW request grab the
+freed slot and queue up behind the same still-busy worker -- so more jobs
+piled into the one-worker pool than RISK_SLOTS was supposed to allow, and
+the worker wasted cycles finishing jobs whose clients had already been
+told 503 and walked away. That's why work_score cratered and error_rate
+went up instead of down.
+
+Fix: release the slot from a done_callback on the executor future itself,
+so it only frees once the job truly finishes (or is cancelled before it
+even started) -- not when the client gives up waiting. Note: cancel() only
+actually works if the job hasn't started running yet; if it's the one
+currently executing, RISK_WAIT_TIMEOUT won't cut it off early, it'll just
+keep running to completion. So it bounds queue wait, not total latency in
+every case
+
+
+after we change to 4 worker, the error when down
+soo adding worker works, and in the attack, at the end, the number of virtual people decrease when the attack
+come down, we can dynamically allocate more worker and time during huge attack
+
+  █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✗ 'p(95)<200' p(95)=1.27s
+
+    http_req_duration{tier:risk}
+    ✗ 'p(95)<1500' p(95)=2.89s
+
+    http_req_duration{tier:stats}
+    ✗ 'p(95)<500' p(95)=1.28s
+
+    http_req_failed
+    ✗ 'rate<0.01' rate=7.10%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 45057  160.270854/s
+    checks_succeeded...: 92.89% 41857 out of 45057
+    checks_failed......: 7.10%  3200 out of 45057
+
+    ✗ status is 200
+      ↳  92% — ✓ 41857 / ✗ 3200
+
+    CUSTOM
+    work_score.....................: 80955  287.962514/s
+
+    HTTP
+    http_req_duration..............: avg=518.49ms min=997.85µs med=301.96ms max=5.31s p(90)=1.2s     p(95)=1.58s
+      { expected_response:true }...: avg=443.34ms min=997.85µs med=294.58ms max=4.69s p(90)=1.09s    p(95)=1.38s
+      { tier:price }...............: avg=413.93ms min=997.85µs med=291.74ms max=4.32s p(90)=997.79ms p(95)=1.27s
+      { tier:risk }................: avg=1.45s    min=25.26ms  med=1.18s    max=5.31s p(90)=2.59s    p(95)=2.89s
+      { tier:stats }...............: avg=416.21ms min=1.11ms   med=291.05ms max=4.31s p(90)=1s       p(95)=1.28s
+    http_req_failed................: 7.10%  3200 out of 45057
+    http_reqs......................: 45057  160.270854/s
+
+    EXECUTION
+    iteration_duration.............: avg=499.05ms min=1.06ms   med=301.05ms max=5.32s p(90)=1.19s    p(95)=1.49s
+    iterations.....................: 45057  160.270854/s
+    vus............................: 6      min=0             max=199
+    vus_max........................: 200    min=200           max=200
+
+    NETWORK
+    data_received..................: 8.4 MB 30 kB/s
+    data_sent......................: 4.5 MB 16 kB/s
+
+
+
+
+running (4m41.1s), 000/200 VUs, 45057 complete and 0 interrupted iterations
+siege ✓ [ 100% ] 000/200 VUs  4m30s
+time="2026-08-22T04:49:46Z" level=error msg="thresholds on metrics 'http_req_duration{tier:price}, http_req_duration{tier:risk}, http_req_duration{tier:stats}, http_req_failed' have been crossed"
+work_score=80955 risk_p95=2896.2189879499997 error_rate=0.07102115098652817 qualified=yes
+
+=== All results (also saved to sweep-results.csv) ===
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate           qualified
+5      0.8      1.6           80955       2896.2189879499997  0.07102115098652817  yes
+huh? so our tester is not matching with our k6 so it cause some problem, we go fix it,
+this result is from the dynamic allocation of worker and time and slot.
+
+new approach, just dynamic time 
+
+
+
+  █ THRESHOLDS 
+
+    http_req_duration{tier:price}
+    ✗ 'p(95)<200' p(95)=416.11ms
+
+    http_req_duration{tier:risk}
+    ✗ 'p(95)<1500' p(95)=1.71s
+
+    http_req_duration{tier:stats}
+    ✓ 'p(95)<500' p(95)=421.24ms
+
+    http_req_failed
+    ✗ 'rate<0.01' rate=4.35%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 81790  290.926007/s
+    checks_succeeded...: 95.64% 78225 out of 81790
+    checks_failed......: 4.35%  3565 out of 81790
+
+    ✗ status is 200
+      ↳  95% — ✓ 78225 / ✗ 3565
+
+    CUSTOM
+    work_score.....................: 169103 601.497257/s
+
+    HTTP
+    http_req_duration..............: avg=285.43ms min=1.02ms  med=195.6ms  max=3.33s p(90)=700.7ms  p(95)=1s      
+      { expected_response:true }...: avg=253.96ms min=1.02ms  med=192.28ms max=3.33s p(90)=416.09ms p(95)=890.52ms
+      { tier:price }...............: avg=194.96ms min=1.02ms  med=187.83ms max=1.93s p(90)=392.92ms p(95)=416.11ms
+      { tier:risk }................: avg=1.09s    min=25.04ms med=997.07ms max=3.33s p(90)=1.59s    p(95)=1.71s   
+      { tier:stats }...............: avg=196.91ms min=1.08ms  med=189.02ms max=1.93s p(90)=394.03ms p(95)=421.24ms
+    http_req_failed................: 4.35%  3565 out of 81790
+    http_reqs......................: 81790  290.926007/s
+
+    EXECUTION
+    iteration_duration.............: avg=274.41ms min=1.07ms  med=195.46ms max=2.09s p(90)=587.27ms p(95)=993.9ms 
+    iterations.....................: 81790  290.926007/s
+    vus............................: 1      min=0             max=199
+    vus_max........................: 200    min=200           max=200
+
+    NETWORK
+    data_received..................: 15 MB  55 kB/s
+    data_sent......................: 8.1 MB 29 kB/s
+
+
+
+
+running (4m41.1s), 000/200 VUs, 81790 complete and 0 interrupted iterations
+siege ✓ [ 100% ] 000/200 VUs  4m30s
+time="2026-08-22T05:37:58Z" level=error msg="thresholds on metrics 'http_req_duration{tier:price}, http_req_duration{tier:risk}, http_req_failed' have been crossed"
+work_score=169103 risk_p95=1714.7773316999999 error_rate=0.0435872356033745 qualified=no
+
+=== All results (also saved to sweep-results.csv) ===
+slots  timeout  wait_timeout  work_score  risk_p95_ms         error_rate          qualified
+5      0.8      1.6           169103      1714.7773316999999  0.0435872356033745  no
+the price and stat is falling, noooooooooo
+so we fix it
+
+RISK_SLOTS=5 was letting too many risk processes run at once, eating CPU
+that /price and /stats need -- "another pool" isn't "another CPU," it's
+still the same 2 cores shared by everything. Dropped slots down to compare:
+
+slots  timeout  wait_timeout  work_score  risk_p95_ms          error_rate            qualified
+2      0.8      1.6           300711      1109.4284878999997   0.0701107895477941    no
+3      0.8      1.6           224441      1377.925501          0.06259266045876297   no
+
+slots=2 wins clearly: higher work_score, lower p95, more margin under the
+1500ms cap (391ms of slack unused). error_rate still ~7%, way over the 1%
+bar, on both.
+
+Next: a 503 hurts error_rate directly, a slow-but-successful 200 doesn't.
+slots=2 has slack to spend, so try loosening the TIMEOUTS (not slots) to
+convert some rejections into slow successes:
+  SLOTS_VALUES=(2)
+  TIMEOUT_VALUES=(0.8 1.0 1.2)
+  WAIT_TIMEOUT_VALUES=(1.6 2.0 2.4)
+watching for where p95 creeps toward 1500ms (but doesn't cross) while
+error_rate drops. If it barely moves even with generous timeouts, the ~7%
+floor is a real capacity limit, not a tuning problem.
+
+New branch: LIFQ-and-cut-in-line-of-risk-(MLFQ)-approach
+
+Trying LIFO admission instead of FIFO. Under sustained overload, FIFO means
+every fresh arrival queues up behind an ever-growing backlog and the whole
+burst tends to time out together -- a request that arrives at a moment we
+could actually serve still gets stuck waiting behind older, already-doomed
+ones. LIFO lets fresh arrivals jump the backlog and get served while
+they're still useful, sacrificing the stale backlog instead (which was
+likely going to time out anyway).
+
+asyncio.Semaphore has no built-in option for this -- release() always
+wakes the OLDEST waiter (_wake_up_next scans self._waiters oldest-to-
+newest). Added a LifoSemaphore(asyncio.Semaphore) subclass in main.py that
+overrides just _wake_up_next to scan reversed(self._waiters) instead --
+newest waiter wakes first. Everything else (acquire/release, the
+cancellation/race bookkeeping) reused unchanged from the base class.
+RISK_SLOTS is now a LifoSemaphore instead of asyncio.Semaphore.
+
+Verified in isolation first (standalone script, 3 queued waiters, held
+permit released) -- wake order came back exact reverse of arrival order
+(third, second, first), confirmed correct before touching the real app.
+Then rebuilt and smoke-tested in the container: single call still works,
+15-request burst gives a healthy mix of 200/503, no crashes.
+
+Not swept against the FIFO baseline yet -- next step is running it through
+sweep-risk-params.sh and comparing against slots=2/timeout=0.8/wait=1.6's
+FIFO numbers above (work_score=300711, error_rate=7.01%).
+
+Deleted RISK_WAIT_TIMEOUT to test without it -- bad, error rate 10-53%.
+Cause: `h` was only ever assigned inside the commented-out try block, so
+every /risk request crashed with NameError (500), not a real behavior
+change. Fixed: `h = await result_of_risk` with no timeout wrapper.
+
+LIFO result: it did not change the error rate, the speed is way lower than 1500, good
+
+Neither timeout knob (queue or wait) moved error_rate either, and LIFO alone
+didn't beat FIFO -- error stuck around 7% no matter what. Conclusion: this
+is the hard capacity floor (error_rate_floor ~ 1 - capacity/offered_load)
+at RISK_SLOTS=2, not a tuning problem. Raising RISK_SLOTS adds capacity but
+previously cost /price//stats latency (contention for the same 2 CPUs).
+
+Fix: os.nice(15) on risk-pool worker processes (via ProcessPoolExecutor's
+initializer= arg), added _deprioritize_risk_worker(). Kernel now favors
+/price//stats (nice=0) over risk workers (nice=15) whenever both want the
+CPU at the same time -- risk still gets full CPU when nothing else needs
+it, only yields under real contention. Not pinning (no hard partition,
+no permanent cap on risk's ceiling).
+
+Verified directly, not just "didn't crash": checked /proc/*/stat while
+risk requests were in flight -- risk-pool workers showed nice=15, uvicorn/
+API processes showed nice=0. Confirmed the split is real.
+
+Point of this: should let RISK_SLOTS go back up (toward 3-5) for more real
+risk capacity WITHOUT the /price//stats cost we saw before. Next: sweep
+RISK_SLOTS=(2 3 5) again with nice in place and see if error_rate finally
+drops.
+
+Ran RISK_SLOTS=(2 3 5), timeout/wait fixed at 0.8:
+  slots  error_rate  price_p95  stats_p95
+  2      7.59%       182ms ok   183ms ok
+  3      6.62%       291ms BAD  291ms ok
+  5      5.71%       407ms BAD  408ms ok (close)
+
+error_rate does trend down as slots rises, but it's not free: price breaks
+at slots=3+, and even at slots=5 error is still 5.7x over the 1% bar --
+nowhere near qualifying. Also nice(15) doesn't look like it's actually
+helping much -- slots=5 price_p95 now (407ms) is barely different from
+slots=5 price_p95 BEFORE nice was added (416ms). Raising slots is trading
+one failing metric for two, not progress.
+
+Going back to slots=2 (where price/stats are healthy) and trying the
+retry idea instead: spend the unused risk p95 margin (911ms vs 1500ms
+cap, ~589ms slack) on retries rather than instant rejection, instead of
+touching slots at all. When RISK_SLOTS.acquire() times out, retry instead
+of failing -- under LIFO each retry re-enters as the newest waiter, so it
+jumps back to the front instead of just sitting in place. Capped by a
+total time budget (not unlimited retries) so it still fails eventually
+instead of hanging forever.
+
+Summary 22/8/2026, major changes only, why we stopped each one, numbers:
+
+- async risk + await: let price/stats interleave with risk. price 4.63ms,
+  stats 5.11ms, error 0%, but risk alone p95=8.11s vs 1500ms bar. stopped:
+  risk needed real capacity control, not just cooperative yielding.
+- pool workers 1->4: error rate dropped but price/stats collapsed:
+  price_p95=1.27s, stats_p95=1.28s, error=7.10%. stopped: more workers ate
+  the CPU price/stats needed.
+- fixed premature semaphore release (was freeing on client giveup instead
+  of job finishing) -- let more jobs pile into the one worker than
+  intended. fixed with a done_callback release instead.
+- slots=2 vs 3 tuning: slots=2 won, work_score=300711, risk_p95=1109ms,
+  error=7.01% vs slots=3's 224441/1378ms/6.26%. stopped tuning slots/
+  timeouts: neither knob moved error_rate off ~7% -- hard capacity floor,
+  not a tuning problem.
+- LIFO admission (LifoSemaphore): error rate unchanged (~7%), risk stayed
+  well under cap. stopped: LIFO alone doesn't fix a capacity floor.
+- os.nice(15) + raising slots to 3/5: error dropped 7.59%->5.71%, but price
+  broke at slots>=3 (291ms, then 407ms), and nice() barely differed from
+  pre-nice numbers. stopped: trading one failing metric for two.
+- retry-with-LIFO-requeue (RISK_ADMIT_BUDGET) at slots=2: designed to spend
+  risk's ~589ms slack on retries instead of instant 503s. never swept with
+  real data -- reverted to a clean baseline before finishing this branch.
+- reverted to naive (no admission control at all) for a clean baseline:
+  work_score=91679, risk_p95=13207ms(!), price=198ms, stats=199ms,
+  error=0%. confirms: no cutoff = 0% errors but risk latency unbounded.
+- current step: added RISK_SLOTS=10 cap back, no timeout yet -- first
+  layer of "add the cutoff slowly," result pending.
+
+FIRST PASS 22/8/2026: RISK_SLOTS=7, RISK_POOL max_workers=1, LIFO
+semaphore, no queue timeout. ALL FOUR THRESHOLDS PASS, qualified=yes.
+  work_score=250762  risk_p95=1353.8ms  price_p95=4.71ms  stats_p95=4.98ms
+  error_rate=0.246%
+
+Got here by: benchmarked calculate_risk() in isolation (no server, no
+load) -- raw compute is only ~27ms/call, so the multi-second latencies
+under load were almost entirely queueing, not real compute cost. Found
+ProcessPoolExecutor's internal task queue is plain FIFO regardless of
+LIFO admission -- once a job is submitted to the pool it queues FIFO
+behind whatever else got submitted first, so LIFO only helps the ones
+still waiting at the semaphore, not the ones already sitting in the
+pool's own backlog. With RISK_SLOTS=10 and 1 worker, up to 9 jobs could
+be stuck in that blind FIFO queue at once, wasting the LIFO reordering.
+Dropped RISK_SLOTS down toward the worker count (10 -> 7) so most
+requests queue at the semaphore (where LIFO actually applies) instead of
+inside the pool -- that's what got risk_p95 under the 1500ms bar.
+
+Also: tried RISK_POOL max_workers=2 earlier, made things worse (risk hit
+3.8s) -- 2 risk workers + 2 uvicorn workers is 4 processes fighting over
+2 CPUs, full oversubscription. Reverted back to max_workers=1.
+
+Re-ran the same slots=7 config a couple more times -- NOT stable. 2nd run
+risk_p95 way high, 3rd run 7.8s.
+
+Tried adding a safety net: RISK_QUEUE_TIMEOUT=1.5s on top of slots=7,
+no-timeout LIFO. Made it worse, not better: risk_p95=9.53s (vs 7.8s
+without it), error_rate stayed fine (0.34%). Why: k6's grading script is
+closed-loop -- each VU waits for its response then sends the next one.
+With no timeout, a starved VU is stuck, which accidentally acts as free
+backpressure (can't generate new load while stuck). Add a 503 cutoff and
+that VU immediately fires a NEW /risk request instead -- turns every
+timeout into a fresh arrival, a retry storm that recycles load faster
+than it would've drained on its own. Reverted RISK_QUEUE_TIMEOUT, back to
+unbounded LIFO wait.
+
+Next to try: drop RISK_SLOTS way down toward the real worker count (7->1
+or 2) instead of adding a timeout -- shrinks the blind FIFO backlog
+inside the pool (a timeout can't touch that anyway, it only bounds the
+semaphore wait) without triggering the retry-storm problem.

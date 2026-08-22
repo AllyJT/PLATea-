@@ -76,6 +76,7 @@ class PriceUpdate(BaseModel):
     price: float
 
 
+ 
 @app.post("/price")
 def update_price(update: PriceUpdate):
     PRICES[update.symbol] = update.price
@@ -90,11 +91,6 @@ def update_price(update: PriceUpdate):
 RISK_CHUNK_SIZE = 4250
 
 
-async def calculate_risk_cooperative(seed: str):
-    h = seed
-
-    for i in range(50000):
-        h = hashlib.sha256(h.encode()).hexdigest()
 
         # Let lightweight requests run between CPU-heavy chunks.
         if (i + 1) % RISK_CHUNK_SIZE == 0:
