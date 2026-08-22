@@ -21,6 +21,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import time
 
+from lifoSemaphore import LifoSemaphore
+
 app = FastAPI()
 
 PRICES = {
@@ -65,6 +67,7 @@ class PriceUpdate(BaseModel):
     price: float
 
 
+ 
 @app.post("/price")
 def update_price(update: PriceUpdate):
     PRICES[update.symbol] = update.price
@@ -76,15 +79,8 @@ def update_price(update: PriceUpdate):
 # Each Uvicorn worker owns one risk process.
 RISK_POOL = ProcessPoolExecutor(max_workers=1)
 
-# Caps how many risk jobs can be admitted (queued + running) at once, so an
-# unbounded pile of risk work can't sit there indefinitely eating CPU that
-# price/stats need.
-RISK_SLOTS = asyncio.Semaphore(int(os.environ.get("RISK_SLOTS", 10)))
-
-# How long a request will wait for a slot before giving up. Without this a
-# request just queues forever behind whatever's ahead of it -- this is the
-# cutoff that turns "wait forever" into "wait up to X seconds, then 503".
-RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1))
+# Caps how many risk jobs can be admitted at once
+RISK_SLOTS = LifoSemaphore(int(os.environ.get("RISK_SLOTS", 10)))
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
@@ -92,11 +88,7 @@ RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1))
 # and medium weight to run first while risk is being calculated by
 #
 async def risk(seed: str = "none"):
-    try:
-        await asyncio.wait_for(RISK_SLOTS.acquire(), timeout=RISK_QUEUE_TIMEOUT)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=503, detail="risk service overloaded")
-
+    await RISK_SLOTS.acquire()
     try:
         # keep track of which event is ready to run next
         event_loop = asyncio.get_running_loop()
