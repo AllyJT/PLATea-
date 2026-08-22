@@ -82,7 +82,6 @@ RISK_POOL = ProcessPoolExecutor(max_workers=1)
 # Caps how many risk jobs can be admitted at once
 RISK_SLOTS = LifoSemaphore(int(os.environ.get("RISK_SLOTS", 7)))
 
-RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.4))
 
 # HEAVY (weight 10): 50000 iterations of SHA-256 over the seed. Uncacheable.
 @app.get("/risk")
@@ -90,11 +89,7 @@ RISK_QUEUE_TIMEOUT = float(os.environ.get("RISK_QUEUE_TIMEOUT", 1.4))
 # and medium weight to run first while risk is being calculated by
 #
 async def risk(seed: str = "none"):
-    try:
-        await asyncio.wait_for(RISK_SLOTS.acquire(), timeout=RISK_QUEUE_TIMEOUT)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=503, detail="risk service overloaded")
-
+    await RISK_SLOTS.acquire()
     try:
         # keep track of which event is ready to run next
         event_loop = asyncio.get_running_loop()
